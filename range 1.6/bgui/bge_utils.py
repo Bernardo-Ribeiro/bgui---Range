@@ -3,11 +3,11 @@
 from .widget import Widget, BGUI_MOUSE_NONE, BGUI_MOUSE_CLICK, BGUI_MOUSE_RELEASE, BGUI_MOUSE_ACTIVE, BGUI_NO_NORMALIZE, BGUI_NO_THEME
 from .text.blf import BlfTextLibrary
 from .theme import Theme
-from . import key_defs
 import collections
 import bgui
 import os
 import weakref
+
 
 # Attempt to import essential Range Engine modules at the module level.
 # These will be validated and used by the System class.
@@ -123,13 +123,17 @@ class System(Widget):
         Widget.__init__(self, None, "<System>", size=[view[0], view[1]], pos=[0, 0], options=BGUI_NO_NORMALIZE|BGUI_NO_THEME)
         self._focused_widget = weakref.ref(self)
         self.lock_focus = False
+        self._mouse_pressed = False
+        self._key_repeat_timers = {}
         self.mouse = self.logic.mouse
         self.layout = None
         self.overlays = collections.OrderedDict()
-        self.keymap = {getattr(self.events, val): getattr(key_defs, val) for val in dir(self.events) if val.endswith('KEY') or val.startswith('PAD')}
         self.main_frame = bgui.Frame(self, "main_frame", border=0)
         self.main_frame.colors = [(0, 0, 0, 0) for _ in range(4)]
         self.elements = {}
+
+
+
 
         # Callback de renderização pós-draw
         try:
@@ -154,7 +158,19 @@ class System(Widget):
         Widget._handle_mouse(self, pos, click_state)
 
     def update_keyboard(self, key, is_shifted):
-        Widget._handle_key(self, key, is_shifted)
+        focused = self.focused_widget
+        if focused and focused is not self and hasattr(focused, '_handle_key'):
+            focused._handle_key(key, is_shifted)
+        else:
+            Widget._handle_key(self, key, is_shifted)
+
+    def update_keyboard_text(self, text):
+        focused = self.focused_widget
+        if focused and focused is not self and hasattr(focused, '_handle_text'):
+            focused._handle_text(text)
+        else:
+            Widget._handle_text(self, text)
+
 
     def _attach_widget(self, widget):
         if widget == self:
@@ -222,50 +238,118 @@ class System(Widget):
         if not hasattr(self, 'render') or not hasattr(self.render, 'getWindowWidth'):
             print(f"BGUI CRITICAL ERROR in run(): self.render (repr: {repr(getattr(self, 'render', 'N/A'))}) is not the expected render module or lacks getWindowWidth. System may not have initialized correctly.")
             return
+
+        # 1. Process Mouse Input (using Range Engine native logic.mouse)
         mouse_obj = self.mouse
-        mouse_events = mouse_obj.inputs
-        pos = list(mouse_obj.position[:])
+        win_w = self.render.getWindowWidth()
+        win_h = self.render.getWindowHeight()
+        pos = [mouse_obj.position[0] * win_w, win_h - (mouse_obj.position[1] * win_h)]
+
         left_mouse_key = getattr(self.events, 'LEFTMOUSE', None)
-        final_mouse_status_int = self.logic.KX_INPUT_NONE
-        if left_mouse_key is not None and left_mouse_key in mouse_events:
-            raw_status_from_engine = mouse_events[left_mouse_key].status
-            status_list = raw_status_from_engine if not isinstance(raw_status_from_engine, list) else [raw_status_from_engine]
-            if any(s == self.logic.KX_INPUT_JUST_ACTIVATED for s in status_list):
-                final_mouse_status_int = self.logic.KX_INPUT_JUST_ACTIVATED
-            elif any(s == self.logic.KX_INPUT_JUST_RELEASED for s in status_list):
-                final_mouse_status_int = self.logic.KX_INPUT_JUST_RELEASED
-            elif any(s == self.logic.KX_INPUT_ACTIVE for s in status_list):
-                final_mouse_status_int = self.logic.KX_INPUT_ACTIVE
+        mouse_state = BGUI_MOUSE_NONE
+
+        left_input = None
+        if left_mouse_key is not None:
+            if hasattr(mouse_obj, 'inputs') and left_mouse_key in mouse_obj.inputs:
+                left_input = mouse_obj.inputs[left_mouse_key]
+            elif hasattr(mouse_obj, 'events') and left_mouse_key in mouse_obj.events:
+                left_input = mouse_obj.events[left_mouse_key]
+
+        if left_input is not None:
+            raw_status = getattr(left_input, 'status', left_input)
+            if hasattr(left_input, 'values') and left_input.values:
+                status_list = left_input.values
+            elif isinstance(raw_status, list):
+                status_list = raw_status
             else:
-                final_mouse_status_int = self.logic.KX_INPUT_NONE
-        pos[0] *= self.render.getWindowWidth()
-        pos[1] = self.render.getWindowHeight() - (self.render.getWindowHeight() * pos[1])
-        if final_mouse_status_int == self.logic.KX_INPUT_JUST_ACTIVATED:
-            mouse_state = BGUI_MOUSE_CLICK
-        elif final_mouse_status_int == self.logic.KX_INPUT_JUST_RELEASED:
-            mouse_state = BGUI_MOUSE_RELEASE
-        elif final_mouse_status_int == self.logic.KX_INPUT_ACTIVE:
-            mouse_state = BGUI_MOUSE_ACTIVE
-        else:
-            mouse_state = BGUI_MOUSE_NONE
+                status_list = [raw_status]
+
+            is_just_activated = getattr(left_input, 'activated', False) or any(s == self.logic.KX_INPUT_JUST_ACTIVATED for s in status_list)
+            is_just_released = getattr(left_input, 'released', False) or any(s == self.logic.KX_INPUT_JUST_RELEASED for s in status_list)
+            is_active = getattr(left_input, 'active', False) or any(s == self.logic.KX_INPUT_ACTIVE for s in status_list)
+
+            was_pressed = getattr(self, '_mouse_pressed', False)
+
+            if is_just_released:
+                mouse_state = BGUI_MOUSE_RELEASE
+                self._mouse_pressed = False
+            elif not was_pressed and (is_just_activated or is_active):
+                mouse_state = BGUI_MOUSE_CLICK
+                self._mouse_pressed = True
+            elif was_pressed and (is_active or is_just_activated):
+                mouse_state = BGUI_MOUSE_ACTIVE
+            elif was_pressed and not is_active:
+                mouse_state = BGUI_MOUSE_RELEASE
+                self._mouse_pressed = False
+            else:
+                mouse_state = BGUI_MOUSE_NONE
+                self._mouse_pressed = False
+
         self.update_mouse(pos, mouse_state)
+
+
+
+
+
+        # 2. Process Keyboard Input (using Range Engine native API)
         keyboard = self.logic.keyboard
-        key_events = keyboard.inputs
-        left_shift_key_event = getattr(self.events, 'LEFTSHIFTKEY', None)
-        right_shift_key_event = getattr(self.events, 'RIGHTSHIFTKEY', None)
+
+        # Check shift status
         is_shifted = False
-        if left_shift_key_event is not None and left_shift_key_event in key_events:
-            shift_status = key_events[left_shift_key_event].status
-            if isinstance(shift_status, list) and shift_status: shift_status = shift_status[-1]
-            if shift_status == self.logic.KX_INPUT_ACTIVE: is_shifted = True
-        if not is_shifted and right_shift_key_event is not None and right_shift_key_event in key_events:
-            shift_status = key_events[right_shift_key_event].status
-            if isinstance(shift_status, list) and shift_status: shift_status = shift_status[-1]
-            if shift_status == self.logic.KX_INPUT_ACTIVE: is_shifted = True
-        for key, state in keyboard.inputs.items():
-            if state == self.logic.KX_INPUT_JUST_ACTIVATED:
-                if key in self.keymap:
-                    self.update_keyboard(self.keymap[key], is_shifted)
+        for shift_name in ('LEFTSHIFTKEY', 'RIGHTSHIFTKEY'):
+            sk = getattr(self.events, shift_name, None)
+            if sk is not None and sk in keyboard.inputs:
+                st = keyboard.inputs[sk].status
+                if isinstance(st, list) and st:
+                    st = st[-1]
+                if st == self.logic.KX_INPUT_ACTIVE:
+                    is_shifted = True
+                    break
+
+        # Pass character text input from Range Engine keyboard.text
+        typed_text = getattr(keyboard, 'text', '')
+        if typed_text:
+            self.update_keyboard_text(typed_text)
+
+        # Process active key events (active_inputs or inputs) with key repeat
+        import time
+        current_time = time.time()
+        active_inputs = getattr(keyboard, 'active_inputs', keyboard.inputs)
+        active_keys_this_frame = set()
+
+        for key_code, input_target in active_inputs.items():
+            status = input_target.status if hasattr(input_target, 'status') else input_target
+            status_list = status if isinstance(status, list) else [status]
+            
+            is_just = getattr(input_target, 'activated', False) or any(s == self.logic.KX_INPUT_JUST_ACTIVATED or s == 1 for s in status_list)
+            is_active = getattr(input_target, 'active', False) or any(s == self.logic.KX_INPUT_ACTIVE or s == 2 for s in status_list)
+
+            if is_active:
+                active_keys_this_frame.add(key_code)
+
+            should_trigger = False
+
+            if is_just:
+                should_trigger = True
+                self._key_repeat_timers[key_code] = (current_time + 0.35, current_time)
+            elif is_active and key_code in self._key_repeat_timers:
+                delay_until, last_repeat = self._key_repeat_timers[key_code]
+                if current_time >= delay_until:
+                    if current_time - last_repeat >= 0.035:  # 28 repeats per second
+                        should_trigger = True
+                        self._key_repeat_timers[key_code] = (delay_until, current_time)
+
+            if should_trigger:
+                self.update_keyboard(key_code, is_shifted)
+
+        # Clean up repeat timers for keys that were released
+        for k in list(self._key_repeat_timers.keys()):
+            if k not in active_keys_this_frame:
+                del self._key_repeat_timers[k]
+
+
+
+
 
     # Métodos de gerenciamento de elementos
     def add_element(self, element_class, name, **kwargs):

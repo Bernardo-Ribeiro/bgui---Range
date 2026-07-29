@@ -464,14 +464,27 @@ class Widget:
 
 		# Run any children callback methods
 		for child in self.children.values():
-			if event == BGUI_MOUSE_RELEASE:
-				
+			if event in (BGUI_MOUSE_RELEASE, BGUI_MOUSE_ACTIVE) and self._is_ancestor_of_focused(child):
 				child._handle_mouse(pos, event)
 			elif (child.gl_position[0][0] <= pos[0] <= child.gl_position[1][0]) and \
 				(child.gl_position[0][1] <= pos[1] <= child.gl_position[2][1]):
 					child._handle_mouse(pos, event)
 			else:
 				child._update_hover(False)
+
+	def _is_ancestor_of_focused(self, child):
+		focused = getattr(self.system, 'focused_widget', None)
+		curr = focused
+		while curr is not None:
+			if curr == child:
+				return True
+			try:
+				curr = curr.parent
+			except Exception:
+				break
+		return False
+
+
 
 	def _update_hover(self, hover=False):
 		if not hover and self._hover:
@@ -486,8 +499,14 @@ class Widget:
 	def _handle_key(self, key, is_shifted):
 		"""Handle any keyboard input"""
 		for child in self.children.values():
-			if self._hover:
-				child._handle_key(key, is_shifted)
+			child._handle_key(key, is_shifted)
+
+	def _handle_text(self, text):
+		"""Handle character text input from Range Engine native keyboard"""
+		for child in self.children.values():
+			child._handle_text(text)
+
+
 
 	# These exist so they can be overridden by subclasses
 	def _handle_click(self):

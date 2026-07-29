@@ -196,11 +196,15 @@ class Slider(Widget):
         
         Widget._draw(self)
         
+    def _handle_click(self):
+        self._update_value_from_mouse(self.cursor_pos)
+
     def _handle_active(self):
         if not self._dragging:
             self._dragging = True
         self._update_value_from_mouse(self.cursor_pos)
         self._dragging = False
+
 
     def _update_value_from_mouse(self, mouse_pos):
         # The slider's position on the X axis

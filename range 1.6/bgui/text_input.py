@@ -12,11 +12,28 @@ This module defines the following constants:
 from .widget import Widget, WeakMethod, BGUI_DEFAULT, BGUI_CENTERY, \
 	BGUI_NO_FOCUS, BGUI_MOUSE_ACTIVE, BGUI_MOUSE_CLICK, BGUI_MOUSE_RELEASE, \
 	BGUI_NO_NORMALIZE
-from .key_defs import *
 from .label import Label
 from .frame import Frame
 
+try:
+	from Range import events
+	BACKSPACEKEY = events.BACKSPACEKEY
+	DELKEY = events.DELKEY
+	LEFTARROWKEY = events.LEFTARROWKEY
+	RIGHTARROWKEY = events.RIGHTARROWKEY
+	ENTERKEY = getattr(events, 'ENTERKEY', getattr(events, 'RETKEY', 220))
+	RETKEY = getattr(events, 'RETKEY', ENTERKEY)
+	PADENTER = events.PADENTER
+except ImportError:
+	BACKSPACEKEY = 223
+	DELKEY = 224
+	LEFTARROWKEY = 137
+	RIGHTARROWKEY = 139
+	ENTERKEY = RETKEY = 220
+	PADENTER = 163
+
 import time
+
 
 # InputText options
 BGUI_INPUT_NONE = 0
@@ -69,9 +86,12 @@ class TextInput(Widget):
 
 		#create widgets
 		self.frame = Frame(self, size=[1, 1], options=BGUI_NO_FOCUS | BGUI_DEFAULT | BGUI_CENTERY)
-		self.highlight = Frame(self, size=self.frame.size, border=0, options=BGUI_NO_FOCUS | BGUI_CENTERY | BGUI_NO_NORMALIZE)
+		self.highlight = Frame(self, size=[0, 0], border=0, options=BGUI_NO_FOCUS | BGUI_CENTERY | BGUI_NO_NORMALIZE)
+		self.highlight.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
 		self.cursor = Frame(self, size=[1, 1], border=0, options=BGUI_NO_FOCUS | BGUI_CENTERY | BGUI_NO_NORMALIZE)
-		self.label = Label(self, text=text, font=font, pt_size=pt_size, sub_theme=self.theme['LabelSubTheme'], options=BGUI_NO_FOCUS | BGUI_DEFAULT)
+		self.label = Label(self, text=text, font=font, pt_size=pt_size, sub_theme=self.theme['LabelSubTheme'], options=BGUI_NO_FOCUS | BGUI_DEFAULT | BGUI_CENTERY, center_text=False)
+
+
 
 		#Color and setting initialization
 		self.colormode = 0
@@ -100,13 +120,13 @@ class TextInput(Widget):
 
 		self.swapcolors(0)
 
-		#gauge height of the drawn font
-		fd = self.system.textlib.dimensions(self.label.fontid, "Egj/}|^,")
+		# Standardized pixel padding
+		self.pad_x = 10
+		px = self.pad_x / self.size[0] if self.size[0] > 0 else 0.02
+		self.label.position = [px, 0]
+		self.system.textlib.size(self.label.fontid, self.label.pt_size, 72)
+		self.fd = self.system.textlib.dimensions(self.label.fontid, self.text_prefix)[0] if self.text_prefix else 0
 
-		py = .5 - (fd[1] / self.size[1] / 2)
-		px = fd[1] / self.size[0] - fd[1] / 1.5 / self.size[0]
-		self.label.position = [px, py]
-		self.fd = self.system.textlib.dimensions(self.label.fontid, self.text_prefix)[0] + fd[1] / 3.2
 
 		self.frame.size = [1, 1]
 		self.frame.position = [0, 0]
@@ -116,6 +136,7 @@ class TextInput(Widget):
 		self.mouse_slice_start = 0
 		self.mouse_slice_end = 0
 		#create the char width list
+		self._is_placeholder = True if text else False
 		self._update_char_widths()
 
 		#initial call to update_selection
@@ -152,8 +173,10 @@ class TextInput(Widget):
 
 	@prefix.setter
 	def prefix(self, value):
-		self.fd = self.system.textlib.dimensions(self.label.fontid, value)[0] + fd[1] / 3.2
 		self.text_prefix = value
+		self.system.textlib.size(self.label.fontid, self.label.pt_size, 72)
+		self.fd = self.system.textlib.dimensions(self.label.fontid, value)[0] if value else 0
+		self.update_selection()
 
 	@property
 	def on_enter_key(self):
@@ -166,6 +189,7 @@ class TextInput(Widget):
 
 	#utility functions
 	def _update_char_widths(self):
+		self.system.textlib.size(self.label.fontid, self.label.pt_size, 72)
 		self.char_widths = []
 		for char in self.text:
 			self.char_widths.append(self.system.textlib.dimensions(self.label.fontid, char * 20)[0] / 20)
@@ -187,9 +211,15 @@ class TextInput(Widget):
 		self.system.focused_widget = self
 		self.swapcolors(1)
 		self.colormode = 1
-		if self.input_options & BGUI_INPUT_SELECT_ALL:
-			self.slice = [0, len(self.text)]
-			self.slice_direction = -1
+		# Clear placeholder text on first activation
+		if getattr(self, '_is_placeholder', False):
+			self.label.text = ""
+			self._update_char_widths()
+			self._is_placeholder = False
+			self.slice = [0, 0]
+		else:
+			self.slice = [len(self.text), len(self.text)]
+
 		self.just_activated = 1
 		self._active = 1
 
@@ -205,25 +235,45 @@ class TextInput(Widget):
 		self.frame.colors = [self.colors["frame"][state]] * 4
 		self.frame.border = self.border_size[state]
 		self.frame.border_color = self.colors["border"][state]
-		self.highlight.colors = [self.colors["highlight"][state]] * 4
 		self.label.color = self.colors["text"][state]
 
 		if state == 0:
 			self.cursor.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
+			self.highlight.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
 		else:
 			self.cursor.colors = [self.colors["text"][state]] * 4
+			if abs(self.slice[0] - self.slice[1]) > 0:
+				self.highlight.colors = [self.colors["highlight"][state]] * 4
+			else:
+				self.highlight.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
 
 	#Selection Code
 	def update_selection(self):
-		left = self.fd + self.system.textlib.dimensions(self.label.fontid, self.text[:self.slice[0]])[0]
-		right = self.fd + self.system.textlib.dimensions(self.label.fontid, self.text[:self.slice[1]])[0]
-		self.highlight.position = [left, 1]
-		self.highlight.size = [right - left, self.frame.size[1] * .8]
-		if self.slice_direction in [0, -1]:
-			self.cursor.position = [left, 1]
+		self.system.textlib.size(self.label.fontid, self.label.pt_size, 72)
+		fd = self.system.textlib.dimensions(self.label.fontid, "Egj/|^,")
+		font_h = fd[1]
+		pad_x = getattr(self, 'pad_x', 10)
+
+		prefix_w = self.system.textlib.dimensions(self.label.fontid, self.text_prefix)[0] if self.text_prefix else 0
+		slice_left_w = self.system.textlib.dimensions(self.label.fontid, self.text[:self.slice[0]])[0] if self.slice[0] > 0 else 0
+		slice_right_w = self.system.textlib.dimensions(self.label.fontid, self.text[:self.slice[1]])[0] if self.slice[1] > 0 else 0
+
+		left = pad_x + prefix_w + slice_left_w
+		right = pad_x + prefix_w + slice_right_w
+
+		slice_len = abs(self.slice[0] - self.slice[1])
+		if slice_len > 0:
+			self.highlight.position = [left, 0]
+			self.highlight.size = [right - left, font_h * 1.1]
+			self.highlight.colors = [self.colors["highlight"][1]] * 4
 		else:
-			self.cursor.position = [right, 1]
-		self.cursor.size = [2, self.frame.size[1] * .8]
+			self.highlight.size = [0, 0]
+			self.highlight.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
+
+		cursor_x = left if self.slice_direction in [0, -1] else right
+		self.cursor.position = [cursor_x, 0]
+		self.cursor.size = [2, font_h * 1.1]
+
 
 	def find_mouse_slice(self, pos):
 		cmc = self.calc_mouse_cursor(pos)
@@ -242,7 +292,10 @@ class TextInput(Widget):
 		self.selection_refresh = 1
 
 	def calc_mouse_cursor(self, pos):
-		adj_pos = pos[0] - (self.position[0] + self.fd)
+		self.system.textlib.size(self.label.fontid, self.label.pt_size, 72)
+		pad_x = getattr(self, 'pad_x', 10)
+		prefix_w = self.system.textlib.dimensions(self.label.fontid, self.text_prefix)[0] if self.text_prefix else 0
+		adj_pos = pos[0] - (self.position[0] + pad_x + prefix_w)
 		find_slice = 0
 		i = 0
 		for entry in self.char_widths:
@@ -256,8 +309,8 @@ class TextInput(Widget):
 			i += 1
 
 		self.time = time.time() - 0.501
-
 		return i
+
 
 	def _handle_mouse(self, pos, event):
 		"""Extend function's behaviour by providing focus to unfrozen inactive TextInput,
@@ -321,191 +374,162 @@ class TextInput(Widget):
 
 		Widget._handle_mouse(self, pos, event)
 
-	def _handle_key(self, key, is_shifted):
-		"""Handle any keyboard input"""
-
+	def _handle_text(self, text):
+		"""Handle character input passed from Range Engine native keyboard.text"""
 		if self != self.system.focused_widget:
 			return
 
-		# Try char to int conversion for alphanumeric keys... kinda hacky though
+		# Clear placeholder if active
+		if getattr(self, '_is_placeholder', False):
+			self.label.text = ""
+			self._update_char_widths()
+			self._is_placeholder = False
+			self.slice = [0, 0]
+
+		for char in text:
+			if char in ('\r', '\n', '\t'):
+				continue
+			if char in ('\b', '\x08'):
+				self._handle_key(BACKSPACEKEY, False)
+				continue
+			self.label.text = self.text[:self.slice[0]] + char + self.text[self.slice[1]:]
+			char_w = self.system.textlib.dimensions(self.label.fontid, char * 20)[0] / 20
+			self.char_widths = self.char_widths[:self.slice[0]] + [char_w] + self.char_widths[self.slice[1]:]
+			self.slice = [self.slice[0] + 1, self.slice[0] + 1]
+			self.slice_direction = 0
+
+		self.selection_refresh = 1
+		self.time = time.time()
+
+	def _handle_key(self, key, is_shifted):
+		"""Handle control keys (navigation, backspace, delete, enter)"""
+		if self != self.system.focused_widget:
+			return
+
+		# Try char to int conversion if key is string representation of int
 		try:
-			key = ord(key)
+			key = int(key)
 		except:
 			pass
 
-		if is_shifted:
-			sh = 0  #used for slicing
-		else:
-			sh = 1
 		slice_len = abs(self.slice[0] - self.slice[1])
-		x, y = 0, 0
 
-		if key == BACKSPACEKEY:
+		key_str = str(key).upper()
+		is_backspace = (key == BACKSPACEKEY) or (key in (8, 223)) or ('BACKSPACE' in key_str)
+		is_delete = (key == DELKEY) or (key in (127, 224)) or ('DELETE' in key_str) or ('DEL' in key_str)
+		is_space = (key in (32, getattr(events, 'SPACEKEY', 32))) or ('SPACE' in key_str)
+		is_left = (key == LEFTARROWKEY) or (key in (137, 149, 203, 276)) or ('LEFT' in key_str)
+		is_right = (key == RIGHTARROWKEY) or (key in (139, 151, 205, 275)) or ('RIGHT' in key_str)
+		is_home = (key in (167, 278)) or ('HOME' in key_str)
+		is_end = (key in (170, 279)) or ('END' in key_str)
+
+		if is_space:
+			self._handle_text(' ')
+		elif is_backspace:
+
 			if slice_len != 0:
 				self.label.text = self.text[:self.slice[0]] + self.text[self.slice[1]:]
 				self.char_widths = self.char_widths[:self.slice[0]] + self.char_widths[self.slice[1]:]
 				self.slice = [self.slice[0], self.slice[0]]
-				#handle char length list
 			elif self.slice[0] > 0:
 				self.label.text = self.text[:self.slice[0] - 1] + self.text[self.slice[1]:]
-				self.slice = [self.slice[0] - 1, self.slice[1] - 1]
-		elif key == DELKEY:
+				self.char_widths = self.char_widths[:self.slice[0] - 1] + self.char_widths[self.slice[1]:]
+				self.slice = [self.slice[0] - 1, self.slice[0] - 1]
+		elif is_delete:
 			if slice_len != 0:
 				self.label.text = self.text[:self.slice[0]] + self.text[self.slice[1]:]
 				self.char_widths = self.char_widths[:self.slice[0]] + self.char_widths[self.slice[1]:]
 				self.slice = [self.slice[0], self.slice[0]]
 			elif self.slice[1] < len(self.text):
 				self.label.text = self.text[:self.slice[0]] + self.text[self.slice[1] + 1:]
+				self.char_widths = self.char_widths[:self.slice[0]] + self.char_widths[self.slice[1] + 1:]
 
-		elif key == LEFTARROWKEY:
-			slice_len = abs(self.slice[0] - self.slice[1])
-			if (self.slice_direction in [-1, 0]):
-				if is_shifted and self.slice[0] > 0:
+		elif is_left:
+			if is_shifted:
+				if self.slice_direction in (-1, 0) and self.slice[0] > 0:
 					self.slice = [self.slice[0] - 1, self.slice[1]]
 					self.slice_direction = -1
-				elif is_shifted:
-					pass
-				else:
-					if slice_len > 0:
-						self.slice = [self.slice[0], self.slice[0]]
-					elif self.slice[0] > 0:
-						self.slice = [self.slice[0] - 1, self.slice[0] - 1]
-					self.slice_direction = 0
-
-			elif self.slice_direction == 1:
-				if is_shifted:
+				elif self.slice_direction == 1:
 					self.slice = [self.slice[0], self.slice[1] - 1]
-				else:
-					self.slice = [self.slice[0], self.slice[0]]
-				if self.slice[0] - self.slice[1] == 0:
-					self.slice_direction = 0
-
-		elif key == RIGHTARROWKEY:
-			slice_len = abs(self.slice[0] - self.slice[1])
-			if (self.slice_direction in [1, 0]):
-				if is_shifted  and self.slice[1] < len(self.text):
-					self.slice = [self.slice[0], self.slice[1] + 1]
-					self.slice_direction = 1
-				elif is_shifted:
-					pass
-				else:
-					if slice_len > 0:
-						self.slice = [self.slice[1], self.slice[1]]
-					elif self.slice[1] < len(self.text):
-						self.slice = [self.slice[1] + 1, self.slice[1] + 1]
-					self.slice_direction = 0
-			elif self.slice_direction == -1:
-				if is_shifted:
-					self.slice = [self.slice[0] + 1, self.slice[1]]
-				else:
-					self.slice = [self.slice[1], self.slice[1]]
-				if self.slice[0] - self.slice[1] == 0:
-					self.slice_direction = 0
-		else:
-			char = None
-			if ord(AKEY) <= key <= ord(ZKEY):
-				if is_shifted: char = chr(key - 32)
-				else: char = chr(key)
-
-			elif ord(ZEROKEY) <= key <= ord(NINEKEY):
-				if not is_shifted: char = chr(key)
-				else:
-					key = chr(key)
-					if key == ZEROKEY: char = ")"
-					elif key == ONEKEY: char = "!"
-					elif key == TWOKEY: char = "@"
-					elif key == THREEKEY: char = "#"
-					elif key == FOURKEY: char = "$"
-					elif key == FIVEKEY: char = "%"
-					elif key == SIXKEY: char = "^"
-					elif key == SEVENKEY: char = "&"
-					elif key == EIGHTKEY: char = "*"
-					elif key == NINEKEY: char = "("
-
-			elif PAD0 <= key <= PAD9:
-				char = str(key - PAD0)
-			elif key == PADPERIOD: char = "."
-			elif key == PADSLASHKEY: char = "/"
-			elif key == PADASTERKEY: char = "*"
-			elif key == PADMINUS: char = "-"
-			elif key == PADPLUSKEY: char = "+"
-			elif key == SPACEKEY: char = " "
-			#elif key == TABKEY: char = "\t"
-			elif key in (ENTERKEY, PADENTER):
-				if self.on_enter_key:
-					self.on_enter_key(self)
-			elif not is_shifted:
-				if key == ACCENTGRAVEKEY: char = "`"
-				elif key == MINUSKEY: char = "-"
-				elif key == EQUALKEY: char = "="
-				elif key == LEFTBRACKETKEY: char = "["
-				elif key == RIGHTBRACKETKEY: char = "]"
-				elif key == BACKSLASHKEY: char = "\\"
-				elif key == SEMICOLONKEY: char = ";"
-				elif key == QUOTEKEY: char = "'"
-				elif key == COMMAKEY: char = ","
-				elif key == PERIODKEY: char = "."
-				elif key == SLASHKEY: char = "/"
+					if self.slice[0] == self.slice[1]:
+						self.slice_direction = 0
 			else:
-				if key == ACCENTGRAVEKEY: char = "~"
-				elif key == MINUSKEY: char = "_"
-				elif key == EQUALKEY: char = "+"
-				elif key == LEFTBRACKETKEY: char = "{"
-				elif key == RIGHTBRACKETKEY: char = "}"
-				elif key == BACKSLASHKEY: char = "|"
-				elif key == SEMICOLONKEY: char = ":"
-				elif key == QUOTEKEY: char = '"'
-				elif key == COMMAKEY: char = "<"
-				elif key == PERIODKEY: char = ">"
-				elif key == SLASHKEY: char = "?"
-
-			if char:
-				#need option to limit text to length of box
-				#need to replace all selected text with new char
-				#need copy place somewhere
-
-				self.label.text = self.text[:self.slice[0]] + char + self.text[self.slice[1]:]
-				self.char_widths = self.char_widths[:self.slice[0]] + [self.system.textlib.dimensions(self.label.fontid, char * 20)[0] / 20] + self.char_widths[self.slice[1]:]
-				self.slice = [self.slice[0] + 1, self.slice[0] + 1]
+				if slice_len > 0:
+					self.slice = [self.slice[0], self.slice[0]]
+				elif self.slice[0] > 0:
+					self.slice = [self.slice[0] - 1, self.slice[0] - 1]
 				self.slice_direction = 0
 
-		#update selection widgets after next draw call
-		self.selection_refresh = 1
+		elif is_right:
+			if is_shifted:
+				if self.slice_direction in (1, 0) and self.slice[1] < len(self.text):
+					self.slice = [self.slice[0], self.slice[1] + 1]
+					self.slice_direction = 1
+				elif self.slice_direction == -1:
+					self.slice = [self.slice[0] + 1, self.slice[1]]
+					if self.slice[0] == self.slice[1]:
+						self.slice_direction = 0
+			else:
+				if slice_len > 0:
+					self.slice = [self.slice[1], self.slice[1]]
+				elif self.slice[1] < len(self.text):
+					self.slice = [self.slice[1] + 1, self.slice[1] + 1]
+				self.slice_direction = 0
 
-		#ensure cursor is not hidden
+		elif is_home:
+			self.slice = [0, 0]
+			self.slice_direction = 0
+
+		elif is_end:
+			self.slice = [len(self.text), len(self.text)]
+			self.slice_direction = 0
+
+		elif key in (ENTERKEY, PADENTER, RETKEY):
+			if self.on_enter_key:
+				self.on_enter_key(self)
+
+		# Fallback for manual string key injection
+		elif isinstance(key, str) and len(key) == 1:
+			self._handle_text(key)
+
+		# Update selection widgets immediately
+		self.selection_refresh = 1
+		self.update_selection()
 		self.time = time.time()
 
-	def _draw(self):
-		temp = self.text
-		self.label.text = self.text_prefix + temp
 
+
+
+	def _draw(self):
 		if self == self.system.focused_widget and self._active == 0:
 			self.activate()
-
-		# Now draw the children
-		Widget._draw(self)
-
-		self.label.text = temp
 
 		if self.colormode == 1 and self.system.focused_widget != self:
 			self._active = 0
 			self.swapcolors(0)
-			self.virgin = 1
 			self.colormode = 0
 
-		#selection code needs to be called after draw, which is tracked internally to TextInput
+		# Ensure selection/cursor positions are updated BEFORE drawing children
 		if self.selection_refresh == 1:
 			self.update_selection()
 			self.selection_refresh = 0
 
-		#handle blinking cursor
+		# Handle blinking cursor color BEFORE drawing
 		if self.slice[0] - self.slice[1] == 0 and self._active:
 			if time.time() - self.time > 1.0:
 				self.time = time.time()
-
 			elif time.time() - self.time > 0.5:
 				self.cursor.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
 			else:
 				self.cursor.colors = [self.colors["text"][1]] * 4
 		else:
 			self.cursor.colors = [[0.0, 0.0, 0.0, 0.0]] * 4
+
+		temp = self.text
+		self.label.text = self.text_prefix + temp
+
+		# Now draw children ONCE with up-to-date position and color
+		Widget._draw(self)
+
+		self.label.text = temp
+
